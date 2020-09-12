@@ -1,6 +1,6 @@
 #include <Arduino.h>
 #include "main.h"
-
+#include "EEPROM.h"
 #include "sensesp_app.h"
 #include "sensors/analog_input.h"
 #include "transforms/linear.h"
@@ -48,10 +48,10 @@ ReactESP app([]() {
               gui->Loop();
        });
 
-       app.onRepeat(1000,[]()
+       /*app.onRepeat(1000,[]()
        {
               debugI("FreeHeap=%d, PsramFree=%d", ESP.getFreeHeap(), ESP.getFreePsram());
-       });
+       });*/
 
        app.onRepeat(50, []() {
               hardware->Loop();
@@ -76,8 +76,9 @@ ReactESP app([]() {
                            ->set_standard_sensors(NONE)
                            ->set_led_blinker(false, 0, 0, 0)
                            ->set_hostname("watch")
-                           ->set_sk_server("192.168.89.120", 3000)
-                           ->set_wifi("DryII", "wifi4boat");
+                           ->set_sk_server("192.168.88.100", 3000)//Home Net: "192.168.89.120", 3000) //Real boat: 
+                           ->set_wifi("DryII", "wifi4boat")
+                           ->set_wifi_reconnect(false);
 
        sensesp_app = builder->get_app();
 

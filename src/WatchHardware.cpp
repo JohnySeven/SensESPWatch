@@ -1,7 +1,9 @@
 #include "WatchHardware.h"
 #include "WiFi.h"
 #include "Images/skicon.h"
-
+#include "sensesp_app.h"
+#include "net/networking.h"
+#include "net/ws_client.h"
 
 void WatchHardware::Initialize(TTGOClass *watch)
 {
@@ -20,9 +22,9 @@ void WatchHardware::Initialize(TTGOClass *watch)
     //Synchronize time to system time
     watch->rtc->syncToSystem();
     watch->tft->setTextFont(2);
-    watch->tft->setCursor(0, 0);
-    watch->tft->println("Initializing...");
-    watch->tft->drawXBitmap((TFT_WIDTH / 2) - (skIcon_width / 2), (TFT_HEIGHT / 2) - (skIcon_height / 2), skIcon_bits, skIcon_width, skIcon_height, TFT_WHITE);
+    watch->tft->setCursor(0, TFT_HEIGHT - 20);
+    watch->tft->println("SensESP Watch");
+    watch->tft->drawXBitmap((TFT_WIDTH / 2) - (skIcon_width / 2), (TFT_HEIGHT / 2) - (skIcon_height / 2), skIcon_bits, skIcon_width, skIcon_height, watch->tft->color565(0, 51, 153));
 
     uptime = millis();
 }
@@ -208,15 +210,25 @@ void WatchHardware::InitAcc()
 
 void WatchHardware::LowPower()
 {
+     auto*wsclient = sensesp_app->get_wsclient();
+     auto*networking = sensesp_app->get_networking();
+
     if (watch->bl->isOn())
     {
         xEventGroupSetBits(isr_group, WATCH_FLAG_SLEEP_MODE);
         watch->closeBL();
         watch->displaySleep();
         sleepMode = true;
+        if(wsclient != NULL && wsclient->is_connected())
+        {
+            wsclient->takeOffline();
+        }
+
+        networking->set_offline(true);
+
         WiFi.mode(WIFI_OFF);
         setCpuFrequencyMhz(20);
-        Serial.println("ENTER IN LIGHT SLEEEP MODE");
+        Serial.println("ENTER LIGHT SLEEEP MODE");
         gpio_wakeup_enable((gpio_num_t)AXP202_INT, GPIO_INTR_LOW_LEVEL);
         gpio_wakeup_enable((gpio_num_t)BMA423_INT1, GPIO_INTR_HIGH_LEVEL);
         esp_sleep_enable_gpio_wakeup();
@@ -224,8 +236,11 @@ void WatchHardware::LowPower()
     }
     else
     {
+        Serial.println("WOKEN UP FROM SLEEP");
         watch->displayWakeup();
         watch->rtc->syncToSystem();
         watch->openBL();
+        networking->set_offline(false);
+        wsclient->reconnect();
     }
 }
