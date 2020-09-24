@@ -11,16 +11,17 @@
 #include "transforms/threshold.h"
 #include "signalk/signalk_value_listener.h"
 #include "sensesp_app_builder.h"
-
-#include "WatchGui.h"
-#include "SplashView.h"
-#include "TimeView.h"
 #include "WatchHardware.h"
-#include "SignalKValueView.h"
+#include "gui.h"
+#include "SKTextView.h"
+/*
+#include "gui/GuiView.h"
+#include "gui/WatchGui.h"
+#include "gui/TimeView.h"
+#include "gui/SignalKValueView.h"*/
 
-WatchHardware *hardware;
-WatchGui *gui;
-TTGOClass*watch;
+Gui *gui;
+TTGOClass *watch;
 SKNumericListener *speedValue;
 SKNumericListener *depthValue;
 TP_Point touchDownPoint;
@@ -41,53 +42,120 @@ ReactESP app([]() {
 #endif
        watch = TTGOClass::getWatch();
        watch->begin();
-       gui = new WatchGui(watch);
-       hardware = new WatchHardware();
-       hardware->Initialize(watch);
-       app.onRepeat(250, []() {
-              gui->Loop();
-       });
-
-       /*app.onRepeat(1000,[]()
-       {
-              debugI("FreeHeap=%d, PsramFree=%d", ESP.getFreeHeap(), ESP.getFreePsram());
-       });*/
-
-       app.onRepeat(50, []() {
-              hardware->Loop();
-              if (watch->touched())
-              {
-                     hardware->ResetSleepTimeout();
-                     touchDownPoint = watch->touch->getPoint();
-                     touched = true;
-              }
-              else if(touched)
-              {
-                     touched = false;
-                     gui->OnTouched(touchDownPoint.x, touchDownPoint.y);
-              }              
-       });
-
-       auto *splash = new SplashView();
-       gui->Navigate(splash);
-
+       watch->lvgl_begin();
+       //gui = new WatchGui(watch);
        // Create the global SensESPApp() object.
        auto *builder = (new SensESPAppBuilder())
                            ->set_standard_sensors(NONE)
                            ->set_led_blinker(false, 0, 0, 0)
                            ->set_hostname("watch")
-                           ->set_sk_server("192.168.88.100", 3000)//Home Net: "192.168.89.120", 3000) //Real boat: 
-                           ->set_wifi("DryII", "wifi4boat")
-                           ->set_wifi_reconnect(false);
+                           ->set_sk_server("192.168.88.100", 3000) //Home Net: "192.168.89.120", 3000) //Real boat:
+                           ->set_wifi("DryII", "wifi4boat");
 
        sensesp_app = builder->get_app();
+       
+       hardware = new WatchHardware();
+       hardware->Initialize(watch);
+       gui = new Gui();
+
+       app.onRepeat(1000, []() {
+              gui->tick();
+       });
+
+       app.onRepeat(5, []() {
+              hardware->Loop();
+       });
+
+
+       if (!hardware->get_wifi_enabled())
+       {
+              sensesp_app->get_networking()->set_offline(false);
+       }
+
+       sensesp_app->add_http_handler("/watch", HTTP_GET, [](AsyncWebServerRequest *request) {
+              request->send(200, "text/html", String(SetWatchTimeHtml));
+       });
+
+       sensesp_app->add_http_handler("/updatetime", HTTP_GET, [](AsyncWebServerRequest *request) {
+              if (request->hasArg("time"))
+              {
+                     if (UpdateRTCTimeFromString(request->arg("time")))
+                     {
+                            watch->rtc->syncToSystem();
+                            request->send(200, "text/plain", "OK");
+                     }
+                     else
+                     {
+                            request->send(200, "text/plain", "Wrong time format!");
+                     }
+              }
+              else
+              {
+                     request->send(400, "text/plain", "Time argument must be present!");
+              }
+       });
+
+       // Start the SensESP application running
+       gui->initialize(watch, hardware);
 
        speedValue = new SKNumericListener("navigation.speedOverGround", 2000);
-       depthValue = new SKNumericListener("environment.depth.belowTransducer", 2000);       
-       // Start the SensESP application running
+       depthValue = new SKNumericListener("environment.depth.belowTransducer", 2000);
+
+       gui->add(new SKFloatView(speedValue, new SKTextView("Speed", "Km/h"), 3.6f, 0));
+       gui->add(new SKFloatView(depthValue, new SKTextView("Depth", "m"), 0.0f, 0));
+
+       //gui->setup();
        sensesp_app->enable();
-       auto *watchFace = new TimeView(watch);
-       watchFace->AddValue(new SignalKFloatView("Speed", "Km/h", speedValue, 3.6f, 0));
-       watchFace->AddValue(new SignalKFloatView("Depth", "m", depthValue, 1));
-       gui->Navigate(watchFace);
 });
+
+bool UpdateRTCTimeFromString(String time)
+{
+       bool ret = false;
+       char timeCh[30];
+       const char pattern[] = ":T-.";
+       time.toCharArray(timeCh, 30);
+
+       //2020-09-15T07:56:44.225Z
+       auto *ptr = strtok(timeCh, pattern);
+       if (ptr != NULL)
+       {
+              auto year = atoi(ptr);
+              ptr = strtok(NULL, pattern);
+              if (ptr != NULL)
+              {
+                     auto month = atoi(ptr);
+                     ptr = strtok(NULL, pattern);
+
+                     if (ptr != NULL)
+                     {
+                            auto day = atoi(ptr);
+                            ptr = strtok(NULL, pattern);
+
+                            if (ptr != NULL)
+                            {
+                                   auto hour = atoi(ptr);
+                                   ptr = strtok(NULL, pattern);
+
+                                   if (ptr != NULL)
+                                   {
+                                          auto minute = atoi(ptr);
+                                          ptr = strtok(NULL, pattern);
+                                          if (ptr != NULL)
+                                          {
+                                                 auto second = atoi(ptr);
+
+                                                 if (year > 2000 && month > 0 && month < 13 && day > 1 && day < 32 && hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 && second >= 0 && second <= 59)
+                                                 {
+                                                        watch->rtc->setDateTime(year, month, day, hour, minute, second);
+                                                        debugI("Watch internal clock has been updated to %d-%d-%d %d:%d:%d", year, month, day, hour, minute, second);
+                                                        ret = true;
+                                                 }
+                                          }
+                                   }
+                            }
+                     }
+              }
+       }
+
+       return ret;
+}

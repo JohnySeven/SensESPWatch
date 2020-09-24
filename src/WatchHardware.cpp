@@ -1,12 +1,27 @@
 #include "WatchHardware.h"
 #include "WiFi.h"
-#include "Images/skicon.h"
+//#include "gui/Images/skicon.h"
 #include "sensesp_app.h"
 #include "net/networking.h"
 #include "net/ws_client.h"
 
+static QueueHandle_t g_event_queue_handle = NULL;
+static EventGroupHandle_t g_event_group = NULL;
+static EventGroupHandle_t isr_group = NULL;
+WatchHardware *hardware = NULL;
+
+WatchHardware::WatchHardware() : Configurable("/watch/hardware")
+{
+    hardware = this;
+    load_configuration();
+    debugI("Loaded HW config with brightness=%d,wifienabled=%d", brightness, enabledWifi);
+    wifiChangePending = true; //update Wifi config
+}
+
 void WatchHardware::Initialize(TTGOClass *watch)
 {
+    setCpuFrequencyMhz(80);
+    
     this->watch = watch;
     g_event_queue_handle = xQueueCreate(20, sizeof(uint8_t));
     g_event_group = xEventGroupCreate();
@@ -23,10 +38,8 @@ void WatchHardware::Initialize(TTGOClass *watch)
     watch->rtc->syncToSystem();
     watch->tft->setTextFont(2);
     watch->tft->setCursor(0, TFT_HEIGHT - 20);
-    watch->tft->println("SensESP Watch");
-    watch->tft->drawXBitmap((TFT_WIDTH / 2) - (skIcon_width / 2), (TFT_HEIGHT / 2) - (skIcon_height / 2), skIcon_bits, skIcon_width, skIcon_height, watch->tft->color565(0, 51, 153));
-
-    uptime = millis();
+    watch->tft->println("SensESP Watch v0.1b");
+    //watch->tft->drawXBitmap((TFT_WIDTH / 2) - (skIcon_width / 2), (TFT_HEIGHT / 2) - (skIcon_height / 2), skIcon_bits, skIcon_width, skIcon_height, watch->tft->color565(0, 51, 153));
 }
 
 void WatchHardware::Loop()
@@ -40,8 +53,7 @@ void WatchHardware::Loop()
         if (sleepMode)
         {
             sleepMode = false;
-            // rtc_clk_cpu_freq_set(RTC_CPU_FREQ_160M);
-            setCpuFrequencyMhz(160);
+            setCpuFrequencyMhz(80);
         }
 
         LowPower();
@@ -65,7 +77,6 @@ void WatchHardware::Loop()
         xEventGroupClearBits(isr_group, WATCH_FLAG_SLEEP_MODE);
 
         log_i("Woken up from sleep");
-        ResetSleepTimeout();
     }
     if ((bits & WATCH_FLAG_SLEEP_MODE))
     {
@@ -89,44 +100,61 @@ void WatchHardware::Loop()
             watch->power->readIRQ();
             if (watch->power->isVbusPlugInIRQ())
             {
-                //updateBatteryIcon(LV_ICON_CHARGE);
-                log_i("Power charging...");
+                debugI("Power charging...");
+                isCharging = true;
+                vBusConnected = true;
             }
             if (watch->power->isVbusRemoveIRQ())
             {
-                log_i("Power not charging...");
-                //updateBatteryIcon(LV_ICON_CALCULATION);
+                debugI("Power not charging...");
+                isCharging = false;
+                vBusConnected = false;
             }
             if (watch->power->isChargingDoneIRQ())
             {
-                log_i("Battery full!");
-                //updateBatteryIcon(LV_ICON_CALCULATION);
+                isCharging = false;
+                debugI("Battery full!");
             }
             if (watch->power->isPEKShortPressIRQ())
             {
                 watch->power->clearIRQ();
-                log_i("Button press!");
+                debugI("Button press!");
                 LowPower();
                 return;
             }
             watch->power->clearIRQ();
             break;
-        /*case Q_EVENT_WIFI_SCAN_DONE: {
-            int16_t len =  WiFi.scanComplete();
-            for (int i = 0; i < len; ++i) {
-                wifi_list_add(WiFi.SSID(i).c_str());
-            }
-            break;
-        }*/
         default:
             break;
         }
     }
-    
-    auto timeout = (millis() - uptime);
-    if (timeout > DEFAULT_SCREEN_TIMEOUT) {
+
+    if (setBrightness != this->brightness)
+    {
+        watch->bl->adjust(this->brightness);
+        log_i("Updating display brightness to %d", brightness);
+        setBrightness = brightness;
+    }
+
+    if (wifiChangePending)
+    {
+        sensesp_app->get_networking()->set_offline(!enabledWifi);
+        log_i("Updating WiFi offline mode to %d", enabledWifi);
+        if (enabledWifi)
+        {
+            sensesp_app->get_wsclient()->reconnect();
+        }
+        wifiChangePending = false;
+    }
+
+    if (!vBusConnected && lv_disp_get_inactive_time(NULL) > sleepTimeout)
+    {
         log_i("Activity timeout, entering sleep mode!");
         LowPower();
+    }
+    else
+    {
+        lv_task_handler();
     }
 }
 
@@ -152,19 +180,23 @@ void AXP202Interupt()
 
 void WatchHardware::InitPMU()
 {
+    auto power = watch->power;
     // Turn on the IRQ used
-    watch->power->adc1Enable(AXP202_BATT_VOL_ADC1 | AXP202_BATT_CUR_ADC1 | AXP202_VBUS_VOL_ADC1 | AXP202_VBUS_CUR_ADC1, AXP202_ON);
-    watch->power->enableIRQ(AXP202_VBUS_REMOVED_IRQ | AXP202_VBUS_CONNECT_IRQ | AXP202_CHARGING_FINISHED_IRQ, AXP202_ON);
-    watch->power->clearIRQ();
+    power->adc1Enable(AXP202_BATT_VOL_ADC1 | AXP202_BATT_CUR_ADC1 | AXP202_VBUS_VOL_ADC1 | AXP202_VBUS_CUR_ADC1, AXP202_ON);
+    power->enableIRQ(AXP202_VBUS_REMOVED_IRQ | AXP202_VBUS_CONNECT_IRQ | AXP202_CHARGING_FINISHED_IRQ, AXP202_ON);
+    power->clearIRQ();
 
     // Turn off unused power
-    watch->power->setPowerOutPut(AXP202_EXTEN, AXP202_OFF);
-    watch->power->setPowerOutPut(AXP202_DCDC2, AXP202_OFF);
-    watch->power->setPowerOutPut(AXP202_LDO3, AXP202_OFF);
-    watch->power->setPowerOutPut(AXP202_LDO4, AXP202_OFF);
+    power->setPowerOutPut(AXP202_EXTEN, AXP202_OFF);
+    power->setPowerOutPut(AXP202_DCDC2, AXP202_OFF);
+    power->setPowerOutPut(AXP202_LDO3, AXP202_OFF);
+    power->setPowerOutPut(AXP202_LDO4, AXP202_OFF);
 
     pinMode(AXP202_INT, INPUT);
     attachInterrupt(AXP202_INT, AXP202Interupt, FALLING);
+
+    vBusConnected = watch->power->isVBUSPlug();
+    isCharging = watch->power->isChargeing();
 }
 
 void BMA423Interupt()
@@ -190,28 +222,37 @@ void BMA423Interupt()
 
 void WatchHardware::InitAcc()
 {
-    auto *sensor = watch->bma;
+    if (doubleTapWakeup)
+    {
+        auto *sensor = watch->bma;
+        Acfg cfg;
+        cfg.odr = BMA4_OUTPUT_DATA_RATE_100HZ;
+        cfg.range = BMA4_ACCEL_RANGE_2G;
+        cfg.bandwidth = BMA4_ACCEL_NORMAL_AVG4;
+        cfg.perf_mode = BMA4_CONTINUOUS_MODE;
+        sensor->accelConfig(cfg);
+        sensor->enableAccel();
 
-    Acfg cfg;
-    cfg.odr = BMA4_OUTPUT_DATA_RATE_100HZ;
-    cfg.range = BMA4_ACCEL_RANGE_2G;
-    cfg.bandwidth = BMA4_ACCEL_NORMAL_AVG4;
-    cfg.perf_mode = BMA4_CONTINUOUS_MODE;
-    sensor->accelConfig(cfg);
-    sensor->enableAccel();
+        pinMode(BMA423_INT1, INPUT);
+        attachInterrupt(BMA423_INT1, BMA423Interupt, RISING);
+        if (tiltWakeup)
+        {
+            sensor->enableFeature(BMA423_TILT, true);
+            sensor->enableTiltInterrupt();
+        }
 
-    pinMode(BMA423_INT1, INPUT);
-    attachInterrupt(BMA423_INT1, BMA423Interupt, RISING);
-    sensor->enableFeature(BMA423_TILT, true);
-    sensor->enableTiltInterrupt();
-    sensor->enableFeature(BMA423_WAKEUP, true);
-    sensor->enableWakeupInterrupt();
+        if (doubleTapWakeup)
+        {
+            sensor->enableFeature(BMA423_WAKEUP, true);
+            sensor->enableWakeupInterrupt();
+        }
+    }
 }
 
 void WatchHardware::LowPower()
 {
-     auto*wsclient = sensesp_app->get_wsclient();
-     auto*networking = sensesp_app->get_networking();
+    auto *wsclient = sensesp_app->get_wsclient();
+    auto *networking = sensesp_app->get_networking();
 
     if (watch->bl->isOn())
     {
@@ -219,13 +260,13 @@ void WatchHardware::LowPower()
         watch->closeBL();
         watch->displaySleep();
         sleepMode = true;
-        if(wsclient != NULL && wsclient->is_connected())
+        if (wsclient != NULL && wsclient->is_connected())
         {
             wsclient->takeOffline();
         }
 
         networking->set_offline(true);
-
+        watch->stopLvglTick();
         WiFi.mode(WIFI_OFF);
         setCpuFrequencyMhz(20);
         Serial.println("ENTER LIGHT SLEEEP MODE");
@@ -237,10 +278,68 @@ void WatchHardware::LowPower()
     else
     {
         Serial.println("WOKEN UP FROM SLEEP");
+        watch->startLvglTick();
         watch->displayWakeup();
+        watch->touchToMonitor();
         watch->rtc->syncToSystem();
         watch->openBL();
-        networking->set_offline(false);
-        wsclient->reconnect();
+        watch->setBrightness(this->brightness);
+        if (enabledWifi)
+        {
+            networking->set_offline(false);
+            wsclient->reconnect();
+        }
+        lv_disp_trig_activity(NULL);
     }
+}
+
+JsonObject &WatchHardware::get_configuration(JsonBuffer &buf)
+{
+    JsonObject &root = buf.createObject();
+    root["wifiEnabled"] = this->enabledWifi;
+    root["sleepTimeout"] = this->sleepTimeout;
+    root["brightness"] = this->brightness;
+
+    return root;
+}
+
+static const char SCHEMA[] PROGMEM = R"~({
+    "type": "object",
+    "properties": {
+        "wifiEnabled": { "title": "Last state of Wifi", "type": "boolean" },
+        "sleepTimeout": { "title": "Inactive sleep interval", "type": "integer" },
+        "brightness": { "title": "Display brightness level 0-255", "type": "integer" },
+        "tiltWakeup": { "title": "Tilt watch to wakeup", "type": "boolean" },
+        "doubleTapWakeup": { "title": "Double tap watch to wakeup", "type": "boolean" }
+    }
+  })~";
+
+String WatchHardware::get_config_schema()
+{
+    return FPSTR(SCHEMA);
+}
+
+bool WatchHardware::set_configuration(const JsonObject &config)
+{
+    String expected[] = {"wifiEnabled", "sleepTimeout", "brightness", "tiltWakeup", "doubleTapWakeup"};
+    for (auto str : expected)
+    {
+        if (!config.containsKey(str))
+        {
+            debugI(
+                "Watch hardware configuration update rejected. Missing following "
+                "parameter: %s",
+                str.c_str());
+            return false;
+        }
+    }
+
+    this->enabledWifi = config["wifiEnabled"].as<bool>();
+    this->wifiChangePending = true;
+    this->sleepTimeout = config["sleepTimeout"].as<int>();
+    this->brightness = config["brightness"].as<uint8_t>();
+    this->doubleTapWakeup = config["doubleTapWakeup"].as<bool>();
+    this->tiltWakeup = config["tiltWakeup"].as<bool>();
+
+    return true;
 }
