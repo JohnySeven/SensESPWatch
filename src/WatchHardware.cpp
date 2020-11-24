@@ -4,6 +4,7 @@
 #include "sensesp_app.h"
 #include "net/networking.h"
 #include "net/ws_client.h"
+#include "driver/adc.h"
 
 static QueueHandle_t g_event_queue_handle = NULL;
 static EventGroupHandle_t g_event_group = NULL;
@@ -21,7 +22,7 @@ WatchHardware::WatchHardware() : Configurable("/watch/hardware")
 void WatchHardware::Initialize(TTGOClass *watch)
 {
     setCpuFrequencyMhz(80);
-    
+
     this->watch = watch;
     g_event_queue_handle = xQueueCreate(20, sizeof(uint8_t));
     g_event_group = xEventGroupCreate();
@@ -33,7 +34,7 @@ void WatchHardware::Initialize(TTGOClass *watch)
     watch->motor->onec();
 
     //clear wrong date
-    watch->rtc->check();
+    //watch->rtc->check();
     //Synchronize time to system time
     watch->rtc->syncToSystem();
     watch->tft->setTextFont(2);
@@ -63,12 +64,28 @@ void WatchHardware::Loop()
             do
             {
                 rlst = watch->bma->readInterrupt();
+                
             } while (!rlst);
+
+            if(watch->bma->isTilt())
+            {
+                lastWakeUp = WAKEUP_FLIP;
+            }
+            else if(watch->bma->isDoubleClick())
+            {
+                lastWakeUp = WAKEUP_DOUBLETAPP;
+            }
+
             xEventGroupClearBits(isr_group, WATCH_FLAG_BMA_IRQ);
         }
         if (bits & WATCH_FLAG_AXP_IRQ)
         {
             watch->power->readIRQ();
+            if(watch->power->isPEKShortPressIRQ())
+            {
+                lastWakeUp = WAKEUP_BUTTON;
+            }
+
             watch->power->clearIRQ();
             //TODO: Only accept axp power pek key short press
             xEventGroupClearBits(isr_group, WATCH_FLAG_AXP_IRQ);
@@ -76,8 +93,9 @@ void WatchHardware::Loop()
         xEventGroupClearBits(isr_group, WATCH_FLAG_SLEEP_EXIT);
         xEventGroupClearBits(isr_group, WATCH_FLAG_SLEEP_MODE);
 
-        log_i("Woken up from sleep");
+        log_i("Woken up from sleep by %d", lastWakeUp);
     }
+
     if ((bits & WATCH_FLAG_SLEEP_MODE))
     {
         //! No event processing after entering the information screen
@@ -155,6 +173,7 @@ void WatchHardware::Loop()
     else
     {
         lv_task_handler();
+        //lv_task_handler();
     }
 }
 
@@ -222,7 +241,7 @@ void BMA423Interupt()
 
 void WatchHardware::InitAcc()
 {
-    if (doubleTapWakeup)
+    if (doubleTapWakeup || tiltWakeup)
     {
         auto *sensor = watch->bma;
         Acfg cfg;
@@ -232,20 +251,27 @@ void WatchHardware::InitAcc()
         cfg.perf_mode = BMA4_CONTINUOUS_MODE;
         sensor->accelConfig(cfg);
         sensor->enableAccel();
+        EnableAccInterupts();
+    }
+}
 
-        pinMode(BMA423_INT1, INPUT);
-        attachInterrupt(BMA423_INT1, BMA423Interupt, RISING);
-        if (tiltWakeup)
-        {
-            sensor->enableFeature(BMA423_TILT, true);
-            sensor->enableTiltInterrupt();
-        }
+void WatchHardware::EnableAccInterupts()
+{
+    auto *sensor = watch->bma;
 
-        if (doubleTapWakeup)
-        {
-            sensor->enableFeature(BMA423_WAKEUP, true);
-            sensor->enableWakeupInterrupt();
-        }
+    pinMode(BMA423_INT1, INPUT);
+    attachInterrupt(BMA423_INT1, BMA423Interupt, RISING);
+
+    if (tiltWakeup)
+    {
+        sensor->enableFeature(BMA423_TILT, true);
+        sensor->enableTiltInterrupt();
+    }
+
+    if (doubleTapWakeup)
+    {
+        sensor->enableFeature(BMA423_WAKEUP, true);
+        sensor->enableWakeupInterrupt();
     }
 }
 
@@ -260,6 +286,7 @@ void WatchHardware::LowPower()
         watch->closeBL();
         watch->displaySleep();
         sleepMode = true;
+        adc_power_off();
         if (wsclient != NULL && wsclient->is_connected())
         {
             wsclient->takeOffline();
@@ -268,27 +295,38 @@ void WatchHardware::LowPower()
         networking->set_offline(true);
         watch->stopLvglTick();
         WiFi.mode(WIFI_OFF);
-        setCpuFrequencyMhz(20);
+        setCpuFrequencyMhz(80);
         Serial.println("ENTER LIGHT SLEEEP MODE");
+        ReactESP::app->tick();
+        EnableAccInterupts();
+        if (doubleTapWakeup || tiltWakeup)
+        {
+            gpio_wakeup_enable((gpio_num_t)BMA423_INT1, GPIO_INTR_HIGH_LEVEL);
+        }
         gpio_wakeup_enable((gpio_num_t)AXP202_INT, GPIO_INTR_LOW_LEVEL);
-        gpio_wakeup_enable((gpio_num_t)BMA423_INT1, GPIO_INTR_HIGH_LEVEL);
         esp_sleep_enable_gpio_wakeup();
+        delay(100);
         esp_light_sleep_start();
     }
     else
     {
+        wakeUpCount++;
         Serial.println("WOKEN UP FROM SLEEP");
+        watch->motor->onec(50);
         watch->startLvglTick();
+        Serial.println("LVGL IS UP FROM SLEEP");
         watch->displayWakeup();
         watch->touchToMonitor();
         watch->rtc->syncToSystem();
         watch->openBL();
         watch->setBrightness(this->brightness);
+        Serial.println("DISPLAY IS UP FROM SLEEP");
         if (enabledWifi)
         {
             networking->set_offline(false);
             wsclient->reconnect();
         }
+
         lv_disp_trig_activity(NULL);
     }
 }
@@ -296,9 +334,10 @@ void WatchHardware::LowPower()
 JsonObject &WatchHardware::get_configuration(JsonBuffer &buf)
 {
     JsonObject &root = buf.createObject();
-    root["wifiEnabled"] = this->enabledWifi;
     root["sleepTimeout"] = this->sleepTimeout;
     root["brightness"] = this->brightness;
+    root["tiltWakeup"] = this->tiltWakeup;
+    root["doubleTapWakeup"] = this->doubleTapWakeup;
 
     return root;
 }
@@ -319,9 +358,9 @@ String WatchHardware::get_config_schema()
     return FPSTR(SCHEMA);
 }
 
-bool WatchHardware::set_configuration(const JsonObject &config)
+bool WatchHardware::set_configuration(const JsonObject& config)
 {
-    String expected[] = {"wifiEnabled", "sleepTimeout", "brightness", "tiltWakeup", "doubleTapWakeup"};
+    String expected[] = {"sleepTimeout", "brightness", "tiltWakeup", "doubleTapWakeup"};
     for (auto str : expected)
     {
         if (!config.containsKey(str))
@@ -334,12 +373,31 @@ bool WatchHardware::set_configuration(const JsonObject &config)
         }
     }
 
-    this->enabledWifi = config["wifiEnabled"].as<bool>();
-    this->wifiChangePending = true;
+    //this->enabledWifi = config["wifiEnabled"].as<bool>();
     this->sleepTimeout = config["sleepTimeout"].as<int>();
     this->brightness = config["brightness"].as<uint8_t>();
     this->doubleTapWakeup = config["doubleTapWakeup"].as<bool>();
     this->tiltWakeup = config["tiltWakeup"].as<bool>();
 
     return true;
+}
+
+void WatchHardware::InitTask()
+{
+    /*xTaskCreate([](void*arguments)
+    {
+        int counter = 0;
+        while(true)
+        {
+            hardware->Loop();
+            counter++;
+            if(counter > 200)
+            {
+                counter = 0;
+                hardware->invokeGuiTick();
+                debugI("GUI TICK!");
+            }
+            delay(5);
+        }
+    }, "HW Loop", 10000, NULL, 1, NULL);*/
 }

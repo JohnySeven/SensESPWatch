@@ -2,9 +2,11 @@
 #include "main.h"
 #include "SKValueUI.h"
 #include "SKValueViewBase.h"
-#include "MiniSettings.h"
+#include "SettingsMenu.h"
 #include "vector"
 #include "WatchHardware.h"
+#include "GuiNavigation.h"
+#include "lv_styles.h"
 
 class Gui
 {
@@ -13,18 +15,20 @@ public:
     void initialize(TTGOClass*watch, WatchHardware*hardware);
     void tick();
     void add(SKValueView*valueView);
-
-    MiniSettings* get_miniSettings() { return miniSettings; }
+    void showMiniSettings();
+    void showDeviceSettings();
 
     void showSkData()
     {
         lv_obj_set_hidden(skRoot, false);
+        lv_obj_set_hidden(mainBar, true);
         skViews.at(skIndex)->getView()->show();
     }
 
-    void hideSkData()
+    void showMainBar()
     {
         lv_obj_set_hidden(skRoot, true);
+        lv_obj_set_hidden(mainBar, false);
     }
 
     void toggleSkView()
@@ -37,7 +41,7 @@ public:
         else
         {
             skIndex = 0;
-            hideSkData();
+            showMainBar();
         }
         skViews.at(skIndex)->getView()->show();
     }
@@ -52,6 +56,7 @@ private:
     lv_obj_t *skLabel;
     lv_obj_t *skRoot;
     lv_style_t activeStatusLabel;
+    lv_style_t imageDisabled;
     lv_style_t inactiveStatusLabel;
     lv_style_t disabledStatusLabel;
     TTGOClass*watch;
@@ -63,6 +68,7 @@ private:
     int lastWifiStatus = -1;
     bool lastSkConnected = true;
     RTC_Date lastShownDate;
-    MiniSettings*miniSettings;
     WatchHardware*hardware;
+    SettingsMenu*deviceSettings;
+    GuiNav*nav;
 };

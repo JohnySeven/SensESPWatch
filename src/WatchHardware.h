@@ -3,6 +3,7 @@
 
 #include "main.h"
 #include "system/configurable.h"
+#include <functional>
 
 #define G_EVENT_VBUS_PLUGIN         _BV(0)
 #define G_EVENT_VBUS_REMOVE         _BV(1)
@@ -28,7 +29,14 @@ enum {
     Q_EVENT_AXP_INT,
 } ;
 
-class WatchHardware : Configurable
+enum WatchWakeUp_t {
+    WAKEUP_DOUBLETAPP,
+    WAKEUP_FLIP,
+    WAKEUP_BUTTON,
+    WAKEUP_POWER_ON
+};
+
+class WatchHardware : public Configurable
 {
     public:
         WatchHardware();
@@ -48,6 +56,9 @@ class WatchHardware : Configurable
         {
             this->save_configuration();
         }
+        void InitTask();
+        void setGuiTick(std::function<void(void)> tick) { guiTick = tick; }
+        void invokeGuiTick() { guiTick(); }
     private:
         TTGOClass*watch;
         bool sleepMode = false;
@@ -60,7 +71,12 @@ class WatchHardware : Configurable
         uint8_t brightness = 120;
         uint8_t setBrightness = 120;
         unsigned int sleepTimeout = 30 * 1000;
+        WatchWakeUp_t lastWakeUp = WAKEUP_POWER_ON;
+        unsigned int wakeUpCount = 0;
+        std::function<void(void)> guiTick = NULL;
+
         void InitAcc();
+        void EnableAccInterupts();
         void InitPMU();
         void LowPower();
 };

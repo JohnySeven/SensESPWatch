@@ -12,13 +12,15 @@ private:
     lv_obj_t *valueLabel;
     lv_obj_t *unitLabel;
     lv_obj_t *led;
-    char *title;
-    char *units;
+    const char *title;
+    const char *units;
+    int decimalPlaces;
 public:
-    SKTextView(char*title,char*units)
+    SKTextView(const String title, const String units, int decimalPlaces = 1)
     {
-        this->title = title;
-        this->units = units;
+        this->title = title.c_str();
+        this->units = units.c_str();
+        this->decimalPlaces = decimalPlaces;
     }
 
     void initialize(lv_obj_t *parent) override
@@ -32,8 +34,8 @@ public:
         static lv_style_t mainStyle;
         lv_style_init(&mainStyle);
         lv_style_set_radius(&mainStyle, LV_OBJ_PART_MAIN, 0);
-        lv_style_set_bg_color(&mainStyle, LV_OBJ_PART_MAIN, LV_COLOR_GRAY);
-        //lv_style_set_bg_opa(&mainStyle, LV_OBJ_PART_MAIN, LV_OPA_0);
+        //lv_style_set_bg_color(&mainStyle, LV_OBJ_PART_MAIN, LV_COLOR_GRAY);
+        lv_style_set_bg_opa(&mainStyle, LV_OBJ_PART_MAIN, LV_OPA_0);
         lv_style_set_border_width(&mainStyle, LV_OBJ_PART_MAIN, 0);
         lv_style_set_text_color(&mainStyle, LV_OBJ_PART_MAIN, LV_COLOR_WHITE);
         container = lv_cont_create(parent, NULL);
@@ -53,7 +55,7 @@ public:
 
         led = lv_led_create(container, NULL);
         lv_led_off(led);
-        lv_obj_set_size(led, 10,10);
+        lv_obj_set_size(led, 10, 10);
         lv_obj_align(led, NULL, LV_ALIGN_OUT_RIGHT_MID, 0, 0);
     }
 
@@ -69,7 +71,7 @@ public:
     }
     void updateNumber(float number) override
     {
-        lv_label_set_text(valueLabel, String(number).c_str());
+        lv_label_set_text(valueLabel, String(number, this->decimalPlaces).c_str());
         toggleLED();
     }
 
@@ -86,5 +88,11 @@ public:
     void hide() override
     {
         lv_obj_set_hidden(container, true);
+    }
+
+    void setEmpty() override
+    {
+        lv_label_set_text(valueLabel, "--");
+        lv_led_off(led);
     }
 };

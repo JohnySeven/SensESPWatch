@@ -14,18 +14,11 @@
 #include "WatchHardware.h"
 #include "gui.h"
 #include "SKTextView.h"
-/*
-#include "gui/GuiView.h"
-#include "gui/WatchGui.h"
-#include "gui/TimeView.h"
-#include "gui/SignalKValueView.h"*/
 
 Gui *gui;
 TTGOClass *watch;
 SKNumericListener *speedValue;
 SKNumericListener *depthValue;
-TP_Point touchDownPoint;
-bool touched = false;
 
 // SensESP builds upon the ReactESP framework. Every ReactESP application
 // defines an "app" object vs defining a "main()" method.
@@ -49,7 +42,7 @@ ReactESP app([]() {
                            ->set_standard_sensors(NONE)
                            ->set_led_blinker(false, 0, 0, 0)
                            ->set_hostname("watch")
-                           ->set_sk_server("192.168.88.100", 3000) //Home Net: "192.168.89.120", 3000) //Real boat:
+                           ->set_sk_server("pi.boat", 3000) //Local net IP
                            ->set_wifi("DryII", "wifi4boat");
 
        sensesp_app = builder->get_app();
@@ -61,6 +54,11 @@ ReactESP app([]() {
        app.onRepeat(1000, []() {
               gui->tick();
        });
+
+       /*hardware->setGuiTick([](){
+       
+              gui->tick();
+       });*/
 
        app.onRepeat(5, []() {
               hardware->Loop();
@@ -98,13 +96,15 @@ ReactESP app([]() {
        // Start the SensESP application running
        gui->initialize(watch, hardware);
 
-       speedValue = new SKNumericListener("navigation.speedOverGround", 2000);
-       depthValue = new SKNumericListener("environment.depth.belowTransducer", 2000);
+       speedValue = new SKNumericListener("navigation.speedOverGround", 1000);
+       depthValue = new SKNumericListener("environment.depth.belowTransducer", 1000);
 
-       gui->add(new SKFloatView(speedValue, new SKTextView("Speed", "Km/h"), 3.6f, 0));
-       gui->add(new SKFloatView(depthValue, new SKTextView("Depth", "m"), 0.0f, 0));
+       gui->add(new SKFloatView(speedValue, new SKTextView("Speed", "Km/h", 0), 3.6f));
+       gui->add(new SKFloatView(depthValue, new SKTextView("Depth", "m", 1), 1.0f));
+       gui->add(new SKFloatView(new SKNumericListener("navigation.headingTrue", 1000), new SKTextView("Heading", "deg", 0), 57.2957795f));
+       gui->add(new SKFloatView(new SKNumericListener("electrical.batteries.rpi.voltage", 5000), new SKTextView("Voltage", "V", 1), 1.0f));
 
-       //gui->setup();
+       sensesp_app->get_networking()->set_useWifiManager(false);
        sensesp_app->enable();
 });
 

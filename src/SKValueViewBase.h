@@ -59,7 +59,7 @@ private:
     uint8_t decimalPlaces;
 
 public:
-    SKFloatView(SKNumericListener *floatListener, SKValueUI *view, float multiply = 1.0f, uint8_t decimalPlaces = 1) : SKValueViewBase(floatListener, view)
+    SKFloatView(SKNumericListener *floatListener, SKValueUI *view, float multiply = 1.0f) : SKValueViewBase(floatListener, view)
     {
         value = 0.0f;
         multiplyFactor = multiply;
@@ -67,6 +67,11 @@ public:
 
         floatListener->attach([this, floatListener]() {
             auto newValue = floatListener->get() * multiplyFactor;
+
+            newValue = roundf(newValue * (10.0f * (float)this->decimalPlaces));
+
+            newValue = newValue / (10.0f * (float)this->decimalPlaces);
+
             if (value != newValue)
             {
                 value = newValue;

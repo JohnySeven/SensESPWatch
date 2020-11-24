@@ -10,4 +10,5 @@ class SKValueUI
         virtual void initialize(lv_obj_t*parent);
         virtual void show();
         virtual void hide();
+        virtual void setEmpty();
 };
